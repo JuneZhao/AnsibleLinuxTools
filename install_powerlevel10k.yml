@@ -1,0 +1,79 @@
+---
+- name: 安装powerlevel10k主题
+  hosts: all
+  become: yes
+  gather_facts: yes
+  
+  vars:
+    zsh_custom: "{{ ansible_env.HOME }}/.oh-my-zsh/custom"
+    themes_dir: "{{ zsh_custom }}/themes"
+  
+  tasks:
+    - name: 检查oh-my-zsh是否已安装
+      stat:
+        path: "{{ ansible_env.HOME }}/.oh-my-zsh"
+      register: omz_check
+    
+    - name: 创建自定义主题目录
+      file:
+        path: "{{ themes_dir }}"
+        state: directory
+        mode: '0755'
+      when: omz_check.stat.exists
+    
+    - name: 检查powerlevel10k主题是否已安装
+      stat:
+        path: "{{ themes_dir }}/powerlevel10k"
+      register: p10k_check
+    
+    - name: 安装powerlevel10k主题
+      git:
+        repo: https://github.com/romkatv/powerlevel10k.git
+        dest: "{{ themes_dir }}/powerlevel10k"
+        clone: yes
+        update: yes
+        version: master
+      when: 
+        - omz_check.stat.exists
+        - not p10k_check.stat.exists
+    
+    - name: 备份当前.zshrc文件
+      copy:
+        src: "{{ ansible_env.HOME }}/.zshrc"
+        dest: "{{ ansible_env.HOME }}/.zshrc.backup.{{ ansible_date_time.epoch }}"
+        remote_src: yes
+      when: omz_check.stat.exists
+    
+    - name: 设置TERM环境变量
+      lineinfile:
+        path: "{{ ansible_env.HOME }}/.zshrc"
+        line: 'export TERM="xterm-256color"'
+        create: yes
+      when: omz_check.stat.exists
+    
+    - name: 配置powerlevel10k主题
+      lineinfile:
+        path: "{{ ansible_env.HOME }}/.zshrc"
+        regexp: '^ZSH_THEME=.*'
+        line: 'ZSH_THEME="powerlevel10k/powerlevel10k"'
+        backup: yes
+      when: omz_check.stat.exists
+    
+    - name: 确保主题配置存在
+      lineinfile:
+        path: "{{ ansible_env.HOME }}/.zshrc"
+        line: 'ZSH_THEME="powerlevel10k/powerlevel10k"'
+        create: yes
+      when: omz_check.stat.exists
+    
+    - name: 验证主题安装
+      stat:
+        path: "{{ themes_dir }}/powerlevel10k"
+      register: p10k_verify
+    
+    - name: 显示主题安装状态
+      debug:
+        msg: |
+          powerlevel10k主题安装状态: {{ '已安装' if p10k_verify.stat.exists else '未安装' }}
+          主题配置已更新: {{ '是' if omz_check.stat.exists else '否' }}
+          注意: 首次登录时会自动进入配置界面，请按照提示进行配置

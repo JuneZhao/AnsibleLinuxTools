@@ -1,0 +1,129 @@
+---
+- name: 安装zsh和oh-my-zsh
+  hosts: all
+  become: yes
+  gather_facts: yes
+  
+  vars:
+    user_home: "/home/{{ ansible_user }}"
+  
+  tasks:
+    - name: 更新包缓存
+      package:
+        update_cache: yes
+      when: ansible_os_family in ["RedHat", "Debian"]
+    
+    - name: 安装必要工具 (curl/wget/git)
+      package:
+        name:
+          - curl
+          - wget
+          - git
+        state: present
+    
+    - name: 检查zsh是否已安装
+      command: which zsh
+      register: zsh_check
+      failed_when: false
+      changed_when: false
+    
+    - name: 安装zsh (CentOS/RHEL)
+      dnf:
+        name: zsh
+        state: present
+      when: 
+        - ansible_os_family == "RedHat"
+        - zsh_check.rc != 0
+    
+    - name: 安装zsh (Ubuntu/Debian)
+      apt:
+        name: zsh
+        state: present
+      when: 
+        - ansible_os_family == "Debian"
+        - zsh_check.rc != 0
+    
+    - name: 获取当前用户的实际shell
+      shell: "getent passwd {{ ansible_user }} | cut -d: -f7"
+      register: current_user_shell
+      changed_when: false
+    
+    - name: 设置zsh为默认shell (Ubuntu/Debian)
+      user:
+        name: "{{ ansible_user }}"
+        shell: /usr/bin/zsh
+      when: 
+        - ansible_os_family == "Debian"
+        - current_user_shell.stdout != "/usr/bin/zsh"
+    
+    - name: 设置zsh为默认shell (CentOS/RHEL)
+      user:
+        name: "{{ ansible_user }}"
+        shell: /bin/zsh
+      when: 
+        - ansible_os_family == "RedHat"
+        - current_user_shell.stdout != "/bin/zsh"
+    
+    - name: 检查oh-my-zsh是否已安装（普通用户）
+      stat:
+        path: "{{ user_home }}/.oh-my-zsh"
+      register: omz_check
+    
+    - name: 安装oh-my-zsh（以普通用户身份）
+      shell: |
+        curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh | sh /dev/stdin --unattended
+      args:
+        creates: "{{ user_home }}/.oh-my-zsh"
+      become_user: "{{ ansible_user }}"
+      environment:
+        HOME: "{{ user_home }}"
+      when: not omz_check.stat.exists
+    
+    - name: 备份原始.zshrc文件
+      copy:
+        src: "{{ user_home }}/.zshrc"
+        dest: "{{ user_home }}/.zshrc.backup.{{ ansible_date_time.epoch }}"
+        remote_src: yes
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+      when: omz_check.stat.exists
+      ignore_errors: yes
+    
+    - name: 配置oh-my-zsh插件基础插件
+      lineinfile:
+        path: "{{ user_home }}/.zshrc"
+        regexp: '^plugins=\(git\)'
+        line: 'plugins=(git sudo history extract colorize z)'
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+      when: omz_check.stat.exists
+    
+    - name: 验证zsh安装
+      command: zsh --version
+      register: zsh_version
+      changed_when: false
+    
+    - name: 验证oh-my-zsh安装（普通用户）
+      stat:
+        path: "{{ user_home }}/.oh-my-zsh"
+      register: omz_verify
+    
+    - name: 获取当前用户的shell
+      shell: "getent passwd {{ ansible_user }} | cut -d: -f7"
+      register: final_shell
+    
+    - name: 显示安装结果
+      debug:
+        msg: |
+          ==========================================
+          zsh和oh-my-zsh安装完成
+          ==========================================
+          ✅ zsh版本: {{ zsh_version.stdout }}
+          ✅ oh-my-zsh安装状态: {{ '已安装' if omz_verify.stat.exists else '❌ 未安装' }}
+          ✅ 用户 {{ ansible_user }} 的默认shell: {{ final_shell.stdout }}
+          
+          使用说明:
+          - 重新登录或执行 `su - {{ ansible_user }}` 使用zsh
+          - 可以安装powerlevel10k主题增强体验
+          - 配置文件位置: {{ user_home }}/.zshrc
+          ==========================================

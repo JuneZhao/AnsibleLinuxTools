@@ -1,0 +1,152 @@
+---
+- name: Push SSH public key to remote hosts
+  hosts: all
+  become: yes
+  gather_facts: yes
+  
+  vars:
+    # 默认公钥路径（控制节点），可通过 --extra-vars 覆盖
+    pubkey_path: "{{ lookup('env','HOME') + '/.ssh/id_rsa.pub' }}"
+    # 目标主机上将要添加公钥的用户
+    target_user: "{{ ansible_user | default('root') }}"
+    # 是否备份原有的 authorized_keys
+    backup_keys: yes
+    # 是否排除重复密钥
+    exclusive: false
+    
+  tasks:
+    - name: 检查本地公钥文件是否存在
+      local_action:
+        module: stat
+        path: "{{ pubkey_path }}"
+      register: local_key_stat
+      run_once: yes
+    
+    - name: 如果本地公钥不存在则报错
+      fail:
+        msg: "本地公钥文件 {{ pubkey_path }} 不存在！请先生成SSH密钥对：ssh-keygen -t rsa -b 4096"
+      when: not local_key_stat.stat.exists
+      run_once: yes
+    
+    - name: 读取控制节点公钥内容
+      set_fact:
+        pubkey_content: "{{ lookup('file', pubkey_path) }}"
+      run_once: yes
+    
+    - name: 显示正在推送的公钥信息
+      debug:
+        msg: |
+          正在推送公钥:
+          源文件: {{ pubkey_path }}
+          目标用户: {{ target_user }}
+          公钥: {{ pubkey_content[:50] }}... (已截断)
+      run_once: yes
+    
+    - name: 确保远程用户的 .ssh 目录存在
+      file:
+        path: "/home/{{ target_user }}/.ssh"
+        state: directory
+        mode: '0700'
+        owner: "{{ target_user }}"
+        group: "{{ target_user }}"
+      when: target_user != "root"
+    
+    - name: 确保 root 用户的 .ssh 目录存在
+      file:
+        path: "/root/.ssh"
+        state: directory
+        mode: '0700'
+        owner: root
+        group: root
+      when: target_user == "root"
+    
+    - name: 备份现有的 authorized_keys（非root用户）
+      copy:
+        src: "/home/{{ target_user }}/.ssh/authorized_keys"
+        dest: "/home/{{ target_user }}/.ssh/authorized_keys.backup.{{ ansible_date_time.epoch }}"
+        remote_src: yes
+        owner: "{{ target_user }}"
+        group: "{{ target_user }}"
+        mode: '0600'
+      when: 
+        - backup_keys
+        - target_user != "root"
+      ignore_errors: yes
+    
+    - name: 备份现有的 authorized_keys（root用户）
+      copy:
+        src: "/root/.ssh/authorized_keys"
+        dest: "/root/.ssh/authorized_keys.backup.{{ ansible_date_time.epoch }}"
+        remote_src: yes
+        owner: root
+        group: root
+        mode: '0600'
+      when: 
+        - backup_keys
+        - target_user == "root"
+      ignore_errors: yes
+    
+    - name: 使用 shell 添加公钥到 authorized_keys（非root用户）
+      shell: |
+        echo "{{ pubkey_content }}" >> /home/{{ target_user }}/.ssh/authorized_keys
+        sort -u -o /home/{{ target_user }}/.ssh/authorized_keys /home/{{ target_user }}/.ssh/authorized_keys
+      when: target_user != "root"
+      register: add_key_result
+      changed_when: true
+    
+    - name: 使用 shell 添加公钥到 authorized_keys（root用户）
+      shell: |
+        echo "{{ pubkey_content }}" >> /root/.ssh/authorized_keys
+        sort -u -o /root/.ssh/authorized_keys /root/.ssh/authorized_keys
+      when: target_user == "root"
+      register: add_key_result
+      changed_when: true
+    
+    - name: 设置 authorized_keys 文件权限（非root用户）
+      file:
+        path: "/home/{{ target_user }}/.ssh/authorized_keys"
+        mode: '0600'
+        owner: "{{ target_user }}"
+        group: "{{ target_user }}"
+      when: target_user != "root"
+    
+    - name: 设置 authorized_keys 文件权限（root用户）
+      file:
+        path: "/root/.ssh/authorized_keys"
+        mode: '0600'
+        owner: root
+        group: root
+      when: target_user == "root"
+    
+    - name: 验证 SSH 公钥已添加
+      shell: grep -c "{{ pubkey_content | trim }}" {{ '/root/.ssh/authorized_keys' if target_user == 'root' else '/home/' + target_user + '/.ssh/authorized_keys' }}
+      register: key_count
+      changed_when: false
+      failed_when: false
+    
+    - name: 显示结果
+      debug:
+        msg: |
+          ==========================================
+          SSH 公钥推送结果
+          ==========================================
+          目标主机: {{ ansible_host | default(inventory_hostname) }}
+          目标用户: {{ target_user }}
+          公钥状态: {{ '✅ 已添加' if key_count.rc == 0 and key_count.stdout | int > 0 else '❌ 添加失败' }}
+          
+          验证命令:
+          ssh -i {{ pubkey_path | replace('.pub', '') }} {{ target_user }}@{{ ansible_host | default(inventory_hostname) }}
+          ==========================================
+    
+    - name: 验证 SSH 端口是否开放
+      wait_for:
+        host: "{{ ansible_host | default(inventory_hostname) }}"
+        port: "{{ ansible_port | default(22) }}"
+        timeout: 5
+      ignore_errors: yes
+      register: ssh_port_check
+    
+    - name: 提示 SSH 连接验证
+      debug:
+        msg: "⚠️ 注意: 请手动测试 SSH 连接: ssh -p {{ ansible_port | default(22) }} -i {{ pubkey_path | replace('.pub', '') }} {{ target_user }}@{{ ansible_host | default(inventory_hostname) }}"
+      when: ssh_port_check is failed

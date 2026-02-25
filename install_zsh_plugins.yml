@@ -1,0 +1,159 @@
+---
+- name: 安装zsh插件
+  hosts: all
+  become: yes
+  gather_facts: yes
+  
+  vars:
+    user_home: "/home/{{ ansible_user }}"
+    zsh_custom: "{{ user_home }}/.oh-my-zsh/custom"
+    plugins_dir: "{{ zsh_custom }}/plugins"
+    
+    # 定义要安装的插件
+    zsh_plugins:
+      - name: zsh-autosuggestions
+        repo: https://github.com/zsh-users/zsh-autosuggestions.git
+        description: "命令行自动建议"
+      - name: zsh-syntax-highlighting
+        repo: https://github.com/zsh-users/zsh-syntax-highlighting.git
+        description: "命令行语法高亮"
+      - name: zsh-completions
+        repo: https://github.com/zsh-users/zsh-completions.git
+        description: "额外的补全定义"
+    
+    # 推荐的插件列表（用于.zshrc配置）
+    recommended_plugins:
+      - git
+      - sudo
+      - history
+      - extract
+      - colorize
+      - zsh-autosuggestions
+      - zsh-syntax-highlighting
+      - zsh-completions
+  
+  tasks:
+    - name: 检查oh-my-zsh是否已安装
+      stat:
+        path: "{{ user_home }}/.oh-my-zsh"
+      register: omz_check
+    
+    - name: 如果oh-my-zsh未安装，退出并提示
+      fail:
+        msg: "oh-my-zsh未安装，请先运行zsh.yml playbook"
+      when: not omz_check.stat.exists
+    
+    - name: 创建自定义插件目录
+      file:
+        path: "{{ plugins_dir }}"
+        state: directory
+        mode: '0755'
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+    
+    - name: 批量安装zsh插件
+      git:
+        repo: "{{ item.repo }}"
+        dest: "{{ plugins_dir }}/{{ item.name }}"
+        clone: yes
+        update: yes
+        version: master
+        accept_hostkey: yes
+      loop: "{{ zsh_plugins }}"
+      become_user: "{{ ansible_user }}"
+      register: plugin_install
+      # 只克隆不存在的插件
+      when: not (plugins_dir + '/' + item.name) is exists
+    
+    - name: 备份当前.zshrc文件
+      copy:
+        src: "{{ user_home }}/.zshrc"
+        dest: "{{ user_home }}/.zshrc.backup.{{ ansible_date_time.epoch }}"
+        remote_src: yes
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+      ignore_errors: yes
+    
+    - name: 确保.zshrc文件存在
+      file:
+        path: "{{ user_home }}/.zshrc"
+        state: touch
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: '0644'
+      changed_when: false
+    
+    - name: 获取当前插件配置
+      shell: grep '^plugins=' {{ user_home }}/.zshrc | head -1
+      register: current_plugins
+      failed_when: false
+      changed_when: false
+    
+    - name: 生成新的插件配置
+      set_fact:
+        new_plugins_line: "plugins=({{ recommended_plugins | join(' ') }})"
+    
+    - name: 更新.zshrc中的插件配置
+      lineinfile:
+        path: "{{ user_home }}/.zshrc"
+        regexp: '^plugins=\(.*\)'
+        line: "{{ new_plugins_line }}"
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        backup: yes
+      when: current_plugins.stdout != new_plugins_line
+    
+    - name: 添加fpath配置（用于zsh-completions）
+      lineinfile:
+        path: "{{ user_home }}/.zshrc"
+        line: |
+          # 添加自定义补全路径
+          fpath=({{ plugins_dir }}/zsh-completions/src $fpath)
+        insertbefore: '^plugins='
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+      when: "'zsh-completions' in recommended_plugins"
+    
+    - name: 验证插件安装
+      stat:
+        path: "{{ plugins_dir }}/{{ item.name }}"
+      loop: "{{ zsh_plugins }}"
+      register: plugin_verify
+    
+    - name: 验证插件配置
+      shell: grep 'plugins=' {{ user_home }}/.zshrc | grep -q "{{ item.name }}"
+      loop: "{{ zsh_plugins }}"
+      register: plugin_config_verify
+      failed_when: false
+      changed_when: false
+    
+    - name: 显示插件安装状态
+      debug:
+        msg: |
+          ==========================================
+          zsh插件安装完成
+          ==========================================
+          {% for plugin in zsh_plugins %}
+          {% set idx = loop.index0 %}
+          ✅ {{ plugin.name }}: 
+             - 安装状态: {{ '已安装' if plugin_verify.results[idx].stat.exists else '❌ 未安装' }}
+             - 配置状态: {{ '已启用' if plugin_config_verify.results[idx].rc == 0 else '❌ 未启用' }}
+             - 功能: {{ plugin.description }}
+          {% endfor %}
+          
+          已启用的完整插件列表:
+          {{ recommended_plugins | join(', ') }}
+          
+          使用说明:
+          - 重新加载配置: `source ~/.zshrc`
+          - 或重新登录使配置生效
+          ==========================================
+    
+    - name: 提示注意事项
+      debug:
+        msg: |
+          ⚠️ 注意事项:
+          1. 插件加载顺序很重要，语法高亮插件建议放在最后
+          2. 如果遇到问题，可以恢复备份文件:
+             cp {{ user_home }}/.zshrc.backup.{{ ansible_date_time.epoch }} {{ user_home }}/.zshrc
+          3. 更多插件可以在 https://github.com/ohmyzsh/ohmyzsh/wiki/Plugins 查找
