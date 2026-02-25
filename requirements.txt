@@ -1,0 +1,7 @@
+# Ansible依赖包
+ansible>=2.9.0
+ansible-core>=2.11.0
+
+# 可选：用于更好的输出格式
+ansible-lint>=5.0.0
+yamllint>=1.26.0
