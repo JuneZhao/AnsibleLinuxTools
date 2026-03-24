@@ -1,5 +1,3 @@
-# AnsibleLinuxTools
-
 # Linux服务器自动化部署Ansible工程
 
 这个Ansible工程用于自动化部署Linux服务器的监控工具和增强的zsh环境。
@@ -10,6 +8,9 @@
 - **htop**: 交互式系统进程监控工具
 - **iotop**: 实时磁盘I/O监控工具  
 - **iftop**: 实时网络流量监控工具
+- **btop**: 现代化系统资源监控工具（替代htop）
+- **atop**: 系统与进程性能监控工具
+- **ncdu**: 磁盘空间占用分析工具
 - **fio**: 磁盘性能压测工具
 - **iperf3**: 网络带宽压测工具
 - **iproute**: 网络路由和接口管理工具集（ip命令）
@@ -104,7 +105,7 @@ ubuntu-server ansible_host=192.168.1.103 ansible_user=root
 
 ```ini
 [azure_vm]
-xxx ansible_port=1022 ansible_user=ansible ansible_ssh_private_key_file=~/.ssh/id_rsa
+gfwje.japaneast.cloudapp.azure.com ansible_port=1022 ansible_user=ansible ansible_ssh_private_key_file=~/.ssh/id_rsa
 
 [azure_vm:vars]
 ansible_user=ansible
@@ -247,6 +248,9 @@ git -C ~/.oh-my-zsh/custom/themes/powerlevel10k pull
 - [powerlevel10k主题](https://github.com/romkatv/powerlevel10k)
 - [zsh-autosuggestions插件](https://github.com/zsh-users/zsh-autosuggestions)
 - [zsh-syntax-highlighting插件](https://github.com/zsh-users/zsh-syntax-highlighting)
+- [btop项目主页](https://github.com/aristocratos/btop)
+- [atop项目主页](https://www.atoptool.nl/)
+- [ncdu项目主页](https://dev.yorhel.nl/ncdu)
 - [fio项目主页](https://github.com/axboe/fio)
 - [iperf3项目主页](https://github.com/esnet/iperf)
 
