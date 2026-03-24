@@ -1,0 +1,330 @@
+---
+- name: 安装系统监控工具
+  hosts: all
+  become: yes
+  gather_facts: yes
+
+  vars:
+    ansible_python_interpreter: /usr/bin/python3.8  # 全局指定 Python 解释器
+    # 监控工具包列表
+    monitoring_packages:
+      # 系统监控工具
+      - name: htop
+        description: "交互式系统进程监控工具"
+      - name: iotop
+        description: "实时磁盘I/O监控工具"
+      - name: iftop
+        description: "实时网络流量监控工具"
+      - name: btop
+        description: "现代化系统资源监控工具（替代htop）"
+      - name: atop
+        description: "系统与进程性能监控工具"
+      - name: ncdu
+        description: "磁盘空间占用分析工具"
+      # 性能压测工具
+      - name: fio
+        description: "磁盘性能压测工具"
+      - name: iperf3
+        description: "网络带宽压测工具"
+      # 网络工具
+      - name: iproute2
+        description: "网络路由和接口管理工具集(ip命令)"
+      - name: iproute2-doc
+        description: "iproute工具文档"
+      # 基础工具
+      - name: git
+        description: "版本控制工具"
+      - name: curl
+        description: "HTTP客户端工具"
+
+    # 包名映射（不同发行版包名可能不同）
+    package_mapping:
+      RedHat:
+        iproute-doc: "iproute-doc"
+        btop: "btop"
+      Debian:
+        iproute2-doc: "iproute2-doc"
+        btop: "btop"
+
+    # 工具验证命令列表
+    monitoring_tools_check:
+      - name: htop
+        command: htop
+        args: --version
+      - name: iotop
+        command: iotop
+        args: --version
+      - name: iftop
+        command: iftop
+        args: -h
+      - name: btop
+        command: btop
+        args: --version
+      - name: atop
+        command: atop
+        args: -V
+      - name: ncdu
+        command: ncdu
+        args: -v
+      - name: fio
+        command: fio
+        args: --version
+      - name: iperf3
+        command: iperf3
+        args: --version
+      - name: ip
+        command: ip
+        args: -V
+      - name: git
+        command: git
+        args: --version
+      - name: curl
+        command: curl
+        args: --version
+
+    # 需要额外处理btop的系统
+    btop_manual_install: false
+
+  tasks:
+    - name: 检测操作系统类型
+      debug:
+        msg: "检测到操作系统: {{ ansible_distribution }} {{ ansible_distribution_version }} ({{ ansible_os_family }})"
+
+    - name: 更新包管理器缓存
+      package:
+        update_cache: yes
+      when: ansible_os_family in ["RedHat", "Debian"]
+
+    - name: 安装EPEL源 (CentOS/RHEL)
+      package:
+        name: epel-release
+        state: present
+      when:
+        - ansible_os_family == "RedHat"
+        - ansible_distribution != "Fedora"
+
+    - name: 收集已安装的包信息
+      package_facts:
+      when: ansible_pkg_mgr != "unknown"
+
+    # 检查btop是否已安装（通用方法）
+    - name: 检查btop是否已安装 (通过command)
+      command: which btop
+      register: btop_installed_check
+      failed_when: false
+      changed_when: false
+      when: ansible_os_family in ["Debian", "RedHat"]
+
+    - name: 检查btop是否已安装 (通过package_facts)
+      set_fact:
+        btop_already_installed: "{{ 'btop' in ansible_facts.packages }}"
+      when: ansible_facts.packages is defined
+
+    - name: 合并btop安装状态
+      set_fact:
+        btop_installed: "{{ btop_already_installed | default(false) or btop_installed_check.rc == 0 }}"
+
+    # btop特殊处理（可能不在默认源中）- 只在未安装时执行
+    - name: 检查btop是否在软件源中 (Debian/Ubuntu)
+      shell: apt-cache policy btop | grep -q "Candidate:"
+      register: btop_in_repo
+      failed_when: false
+      changed_when: false
+      when:
+        - ansible_os_family == "Debian"
+        - ansible_distribution == "Ubuntu"
+        - not btop_installed | default(false)
+
+    - name: 设置btop安装方式标记
+      set_fact:
+        btop_manual_install: "{{ btop_in_repo.rc != 0 }}"
+      when:
+        - ansible_os_family == "Debian"
+        - ansible_distribution == "Ubuntu"
+        - not btop_installed | default(false)
+
+    # Ubuntu 低版本从GitHub安装btop - 只在未安装时执行
+    - name: 从GitHub安装btop (Ubuntu 18.04/20.04)
+      block:
+        - name: 检查btop是否已存在
+          stat:
+            path: /usr/local/bin/btop
+          register: btop_binary
+
+        - name: 下载btop最新release
+          get_url:
+            url: "https://github.com/aristocratos/btop/releases/latest/download/btop-x86_64-linux-musl.tbz"
+            dest: /tmp/btop.tbz
+            mode: '0644'
+          when:
+            - ansible_architecture == "x86_64"
+            - not btop_binary.stat.exists
+
+        - name: 创建临时解压目录
+          file:
+            path: /tmp/btop_install
+            state: directory
+          when: not btop_binary.stat.exists
+
+        - name: 解压btop
+          unarchive:
+            src: /tmp/btop.tbz
+            dest: /tmp/btop_install
+            remote_src: yes
+          when: not btop_binary.stat.exists
+
+        - name: 安装btop
+          shell: |
+            cd /tmp/btop_install/btop
+            bash install.sh
+          args:
+            creates: /usr/local/bin/btop
+          when: not btop_binary.stat.exists
+
+        - name: 清理临时文件
+          file:
+            path: "{{ item }}"
+            state: absent
+          loop:
+            - /tmp/btop.tbz
+            - /tmp/btop_install
+          when: not btop_binary.stat.exists
+
+        - name: 显示btop安装状态
+          debug:
+            msg: "btop {{ '已存在，跳过安装' if btop_binary.stat.exists else '已从GitHub安装完成' }}"
+      when:
+        - ansible_os_family == "Debian"
+        - ansible_distribution == "Ubuntu"
+        - ansible_distribution_version is version('22.04', '<')
+        - not btop_installed | default(false)
+      become: yes
+
+    # Ubuntu 22.04+ 可以直接安装 - 只在未安装时执行
+    - name: 直接安装btop (Ubuntu 22.04+)
+      package:
+        name: btop
+        state: present
+      when:
+        - ansible_os_family == "Debian"
+        - ansible_distribution == "Ubuntu"
+        - ansible_distribution_version is version('22.04', '>=')
+        - not btop_installed | default(false)
+
+    # 非Ubuntu的Debian系统 - 只在未安装时执行
+    - name: 安装btop (其他Debian)
+      package:
+        name: btop
+        state: present
+      when:
+        - ansible_os_family == "Debian"
+        - ansible_distribution != "Ubuntu"
+        - not btop_installed | default(false)
+
+    # RedHat系列安装btop - 只在未安装时执行
+    - name: 安装btop (RedHat)
+      package:
+        name: btop
+        state: present
+      when:
+        - ansible_os_family == "RedHat"
+        - not btop_installed | default(false)
+
+    # 显示btop最终状态
+    - name: 验证btop安装
+      command: btop --version
+      register: btop_final_check
+      failed_when: false
+      changed_when: false
+
+    - name: 显示btop最终状态
+      debug:
+        msg: "btop 最终状态: {{ '✅ 已安装 - ' + (btop_final_check.stdout | default('') | regex_replace('\\x1B\\[[0-9;]*[A-Za-z]', '') | trim) if btop_final_check.rc == 0 else '❌ 安装失败' }}"
+
+    - name: 安装监控工具包（排除btop）
+      package:
+        name: "{{ item.name }}"
+        state: present
+      loop: "{{ monitoring_packages }}"
+      when:
+        - item.name != "iproute2-doc" or ansible_os_family == "RedHat"
+        - item.name != "btop"  # btop已经单独处理
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: 安装iproute2-doc (Ubuntu/Debian)
+      package:
+        name: iproute2-doc
+        state: present
+      when: ansible_os_family == "Debian"
+
+    - name: 验证工具安装状态
+      command: "{{ item.command }} {{ item.args | default('--version') }}"
+      register: tool_check
+      failed_when: false
+      changed_when: false
+      loop: "{{ monitoring_tools_check }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: 显示工具安装结果
+      debug:
+        msg: |
+          {{ item.item.name }}: {{ '✅ 已安装' if (
+            item.rc == 0
+            or (item.item.name == 'iftop' and (item.stderr | default('')) is search('iftop, version'))
+            or (item.item.name == 'ncdu' and (
+                (item.stdout | default('')) is search('ncdu')
+                or (item.stderr | default('')) is search('ncdu')
+              ))
+          ) else '❌ 未安装或无法验证' }}
+          {% if item.stdout is defined and item.stdout %}
+          版本信息: {{ item.stdout | regex_replace('\x1B\[[0-9;]*[A-Za-z]', '') | trim }}
+          {% elif item.stderr is defined and item.stderr %}
+          错误信息: {{ item.stderr | regex_replace('\x1B\[[0-9;]*[A-Za-z]', '') | trim }}
+          {% endif %}
+      loop: "{{ tool_check.results }}"
+      loop_control:
+        label: "{{ item.item.name }}"
+
+    - name: 创建监控工具使用说明
+      copy:
+        content: |
+          ==========================================
+          监控工具使用说明
+          ==========================================
+
+          htop    - 交互式进程查看器 (运行: htop)
+          iotop   - 磁盘I/O监控 (运行: sudo iotop)
+          iftop   - 网络流量监控 (运行: sudo iftop)
+          btop    - 现代化资源监控 (运行: btop)
+          atop    - 系统性能监控 (运行: sudo atop)
+          ncdu    - 磁盘占用分析 (运行: ncdu /)
+          fio     - 磁盘性能测试 (运行: fio --help)
+          iperf3  - 网络带宽测试 (运行: iperf3 -s 启动服务端)
+          ip      - 网络配置工具 (运行: ip addr)
+
+          ==========================================
+          安装时间: {{ ansible_date_time.iso8601 }}
+          主机名: {{ ansible_hostname }}
+          ==========================================
+        dest: /opt/monitoring-tools-readme.txt
+        mode: '0644'
+      when: tool_check.results | selectattr('rc', 'equalto', 0) | list | length > 0
+
+    - name: 显示安装摘要
+      debug:
+        msg: |
+          ==========================================
+          监控工具安装完成
+          ==========================================
+          成功安装的工具数: {{ tool_check.results | selectattr('rc', 'equalto', 0) | list | length }}
+          失败的工具数: {{ tool_check.results | rejectattr('rc', 'equalto', 0) | list | length }}
+
+          已安装工具清单:
+          {% for pkg in monitoring_packages %}
+          - {{ pkg.name }}: {{ pkg.description }}
+          {% endfor %}
+
+          使用说明已保存至: /opt/monitoring-tools-readme.txt
+          ==========================================
